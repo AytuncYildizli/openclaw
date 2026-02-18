@@ -164,6 +164,7 @@ async function sweepSubagentRuns() {
       continue;
     }
     subagentRuns.delete(runId);
+    hookEmittedRuns.delete(runId);
     mutated = true;
     try {
       await callGateway({
@@ -249,6 +250,7 @@ function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didA
   }
   if (cleanup === "delete") {
     subagentRuns.delete(runId);
+    hookEmittedRuns.delete(runId);
     persistSubagentRuns();
     return;
   }
