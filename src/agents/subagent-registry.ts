@@ -1,5 +1,6 @@
 import { loadConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
+import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
@@ -28,6 +29,7 @@ export type SubagentRunRecord = {
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
+const hookEmittedRuns = new Set<string>();
 let sweeper: NodeJS.Timeout | null = null;
 let listenerStarted = false;
 let listenerStop: (() => void) | null = null;
@@ -40,6 +42,30 @@ function persistSubagentRuns() {
   } catch {
     // ignore persistence failures
   }
+}
+
+/**
+ * Emit the subagent:complete internal hook event exactly once per runId.
+ * Both the lifecycle listener and the agent.wait path can resolve a run,
+ * so we guard with hookEmittedRuns to guarantee at-most-once delivery.
+ */
+function emitSubagentCompleteHook(entry: SubagentRunRecord) {
+  if (hookEmittedRuns.has(entry.runId)) {
+    return;
+  }
+  hookEmittedRuns.add(entry.runId);
+  void triggerInternalHook(
+    createInternalHookEvent("subagent", "complete", entry.requesterSessionKey, {
+      childSessionKey: entry.childSessionKey,
+      runId: entry.runId,
+      label: entry.label,
+      task: entry.task,
+      outcome: entry.outcome,
+      startedAt: entry.startedAt,
+      endedAt: entry.endedAt,
+      runtimeMs: entry.startedAt && entry.endedAt ? entry.endedAt - entry.startedAt : undefined,
+    }),
+  );
 }
 
 const resumedRuns = new Set<string>();
@@ -219,6 +245,9 @@ function ensureListener() {
     }
     persistSubagentRuns();
 
+    // Emit subagent:complete hook event so external hooks can track deliveries.
+    emitSubagentCompleteHook(entry);
+
     if (!beginSubagentCleanup(evt.runId)) {
       return;
     }
@@ -289,7 +318,9 @@ export function registerSubagentRun(params: {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  model?: string;
   runTimeoutSeconds?: number;
+  expectsCompletionMessage?: boolean;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -364,6 +395,10 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
     if (mutated) {
       persistSubagentRuns();
     }
+
+    // Emit subagent:complete hook event (agent.wait path).
+    emitSubagentCompleteHook(entry);
+
     if (!beginSubagentCleanup(runId)) {
       return;
     }
@@ -393,6 +428,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
 export function resetSubagentRegistryForTests() {
   subagentRuns.clear();
   resumedRuns.clear();
+  hookEmittedRuns.clear();
   stopSweeper();
   restoreAttempted = false;
   if (listenerStop) {
@@ -428,4 +464,40 @@ export function listSubagentRunsForRequester(requesterSessionKey: string): Subag
 
 export function initSubagentRegistry() {
   restoreSubagentRunsOnce();
+}
+
+function getRunsSnapshotForRead(): Map<string, SubagentRunRecord> {
+  const merged = new Map<string, SubagentRunRecord>();
+  const shouldReadDisk = !(process.env.VITEST || process.env.NODE_ENV === "test");
+  if (shouldReadDisk) {
+    try {
+      for (const [runId, entry] of loadSubagentRegistryFromDisk().entries()) {
+        merged.set(runId, entry);
+      }
+    } catch {
+      // Ignore disk read failures and fall back to local memory state.
+    }
+  }
+  for (const [runId, entry] of subagentRuns.entries()) {
+    merged.set(runId, entry);
+  }
+  return merged;
+}
+
+export function countActiveRunsForSession(requesterSessionKey: string): number {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of getRunsSnapshotForRead().values()) {
+    if (entry.requesterSessionKey !== key) {
+      continue;
+    }
+    if (typeof entry.endedAt === "number") {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
 }

@@ -139,6 +139,8 @@ export const AgentDefaultsSchema = z
       .object({
         maxConcurrent: z.number().int().positive().optional(),
         archiveAfterMinutes: z.number().int().positive().optional(),
+        maxSpawnDepth: z.number().int().nonnegative().optional(),
+        maxChildrenPerAgent: z.number().int().positive().optional(),
         model: z
           .union([
             z.string(),

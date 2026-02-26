@@ -294,6 +294,8 @@ export function buildSubagentSystemPrompt(params: {
   childSessionKey: string;
   label?: string;
   task?: string;
+  childDepth?: number;
+  maxSpawnDepth?: number;
 }) {
   const taskText =
     typeof params.task === "string" && params.task.trim()

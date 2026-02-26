@@ -202,6 +202,10 @@ export type AgentDefaultsConfig = {
     maxConcurrent?: number;
     /** Auto-archive sub-agent sessions after N minutes (default: 60). */
     archiveAfterMinutes?: number;
+    /** Maximum spawn nesting depth for sub-agents. Default: 1. */
+    maxSpawnDepth?: number;
+    /** Maximum active children per agent session. Default: 5. */
+    maxChildrenPerAgent?: number;
     /** Default model selection for spawned sub-agents (string or {primary,fallbacks}). */
     model?: string | { primary?: string; fallbacks?: string[] };
   };
