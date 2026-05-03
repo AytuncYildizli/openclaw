@@ -469,6 +469,10 @@ export function parseCliJsonl(
   }
   let sessionId: string | undefined;
   let usage: CliUsage | undefined;
+  // Keep the last empty-text claudeResult so we can fall back to it if no
+  // assistant content shows up later. Preserves the original contract for
+  // streams that legitimately end with empty result + no other content.
+  let emptyClaudeResultFallback: CliOutput | null = null;
   const texts: string[] = [];
   for (const line of lines) {
     for (const parsed of parseJsonRecordCandidates(line)) {
@@ -488,7 +492,31 @@ export function parseCliJsonl(
         usage,
       });
       if (claudeResult) {
-        return claudeResult;
+        // Don't drop sessionId/usage we just learned from the result line.
+        sessionId = claudeResult.sessionId ?? sessionId;
+        usage = claudeResult.usage ?? usage;
+        // claude-cli sometimes emits a `result` line with empty text while
+        // the actual assistant content arrives on prior `assistant` lines.
+        // Short-circuiting here would surface a "no reply" outcome to Mahmut
+        // even though the assistant did speak. Only return on non-empty.
+        if (claudeResult.text.trim()) {
+          return claudeResult;
+        }
+        // Stash the empty-text result so legitimately-empty streams still
+        // round-trip sessionId + usage, then keep scanning for assistant
+        // lines that may carry the actual content.
+        emptyClaudeResultFallback = claudeResult;
+        continue;
+      }
+
+      // Fallback path: collect raw assistant message text for the empty-result
+      // case above. Without this, `texts` stays empty and parseCliJsonl
+      // returns null even though the stream contained valid replies.
+      if (parsed.type === "assistant") {
+        const messageText = collectCliText(parsed.message).trim();
+        if (messageText) {
+          texts.push(messageText);
+        }
       }
 
       const item = isRecord(parsed.item) ? parsed.item : null;
@@ -502,7 +530,9 @@ export function parseCliJsonl(
   }
   const text = texts.join("\n").trim();
   if (!text) {
-    return null;
+    // Prefer the empty-text claudeResult over null so callers still get
+    // sessionId + usage from the stream (preserves existing test contract).
+    return emptyClaudeResultFallback;
   }
   return { text, sessionId, usage };
 }
