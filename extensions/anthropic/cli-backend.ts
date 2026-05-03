@@ -38,7 +38,7 @@ export function buildAnthropicCliBackend(): CliBackendPlugin {
         "--setting-sources",
         "user",
         "--allowedTools",
-        "mcp__openclaw__*,mcp__mahmory__*",
+        "mcp__openclaw__*,mcp__mahmory__mahmory_recall,mcp__mahmory__mahmory_smart_recall,mcp__mahmory__mahmory_health,mcp__mahmory__mahmory_kg_stats",
       ],
       resumeArgs: [
         "-p",
@@ -49,7 +49,7 @@ export function buildAnthropicCliBackend(): CliBackendPlugin {
         "--setting-sources",
         "user",
         "--allowedTools",
-        "mcp__openclaw__*,mcp__mahmory__*",
+        "mcp__openclaw__*,mcp__mahmory__mahmory_recall,mcp__mahmory__mahmory_smart_recall,mcp__mahmory__mahmory_health,mcp__mahmory__mahmory_kg_stats",
         "--resume",
         "{sessionId}",
       ],
