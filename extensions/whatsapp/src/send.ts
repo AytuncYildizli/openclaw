@@ -27,6 +27,32 @@ import { markdownToWhatsApp, toWhatsappJid } from "./text-runtime.js";
 
 const outboundLog = createSubsystemLogger("gateway/channels/whatsapp").child("outbound");
 
+// Bound every Baileys send-path call so a hung WhatsApp Web socket cannot
+// stall the outbound queue indefinitely. Default 30s; override via
+// OPENCLAW_WHATSAPP_SEND_TIMEOUT_MS. Floor 1000ms to prevent foot-guns.
+function resolveWhatsAppSendTimeoutMs(): number {
+  const raw = process.env.OPENCLAW_WHATSAPP_SEND_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : 30_000;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1000, parsed) : 30_000;
+}
+
+async function withWhatsAppSendTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  const timeoutMs = resolveWhatsAppSendTimeoutMs();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`WhatsApp ${label} timed out after ${timeoutMs}ms`);
+      err.name = "WhatsAppSendTimeoutError";
+      reject(err);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function resolveOutboundWhatsAppAccountId(params: {
   cfg: OpenClawConfig;
   accountId?: string;
@@ -144,7 +170,7 @@ export async function sendMessageWhatsApp(
     outboundLog.info(`Sending message -> ${redactedJid}${primaryMediaUrl ? " (media)" : ""}`);
     logger.info({ jid: redactedJid, hasMedia: Boolean(primaryMediaUrl) }, "sending message");
     if (!isWhatsAppNewsletterJid(jid)) {
-      await active.sendComposingTo(to);
+      await withWhatsAppSendTimeout(active.sendComposingTo(to), "typing");
     }
     const hasExplicitAccountId = Boolean(options.accountId?.trim());
     const accountId = hasExplicitAccountId ? resolvedAccountId : undefined;
@@ -158,13 +184,25 @@ export async function sendMessageWhatsApp(
           }
         : undefined;
     const result = sendOptions
-      ? await active.sendMessage(to, text, mediaBuffer, mediaType, sendOptions)
-      : await active.sendMessage(to, text, mediaBuffer, mediaType);
+      ? await withWhatsAppSendTimeout(
+          active.sendMessage(to, text, mediaBuffer, mediaType, sendOptions),
+          "message",
+        )
+      : await withWhatsAppSendTimeout(
+          active.sendMessage(to, text, mediaBuffer, mediaType),
+          "message",
+        );
     if (visibleTextAfterVoice) {
       if (sendOptions) {
-        await active.sendMessage(to, visibleTextAfterVoice, undefined, undefined, sendOptions);
+        await withWhatsAppSendTimeout(
+          active.sendMessage(to, visibleTextAfterVoice, undefined, undefined, sendOptions),
+          "voice-caption",
+        );
       } else {
-        await active.sendMessage(to, visibleTextAfterVoice, undefined, undefined);
+        await withWhatsAppSendTimeout(
+          active.sendMessage(to, visibleTextAfterVoice, undefined, undefined),
+          "voice-caption",
+        );
       }
     }
     const messageId = (result as { messageId?: string })?.messageId ?? "unknown";
@@ -196,7 +234,7 @@ export async function sendTypingWhatsApp(
     accountId: options.accountId,
   });
   if (!isWhatsAppNewsletterJid(toWhatsappJid(to))) {
-    await active.sendComposingTo(to);
+    await withWhatsAppSendTimeout(active.sendComposingTo(to), "typing");
   }
 }
 
