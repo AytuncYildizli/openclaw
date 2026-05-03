@@ -229,6 +229,14 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
   if (params.message.role !== "assistant") {
     return { ok: false, reason: "message role must be assistant" };
   }
+  // Skip poisoned synthetic turns. Stream-error / OAuth-mid-turn / unhandled
+  // stop_reason cascades resolve the finalResult promise with a synthetic
+  // "[assistant turn failed before producing content]" message marked
+  // stopReason="error". Persisting this poisons the resume context — next
+  // turn sees "user: X / assistant: <empty>" and responds incoherently.
+  if (params.message.stopReason === "error") {
+    return { ok: false, reason: "assistant turn errored; not persisted" };
+  }
 
   const storePath = params.storePath ?? resolveDefaultSessionStorePath(params.agentId);
   const store = loadSessionStore(storePath, { skipCache: true });
