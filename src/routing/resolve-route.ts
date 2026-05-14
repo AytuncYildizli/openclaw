@@ -27,6 +27,8 @@ export type ResolveAgentRouteInput = {
   cfg: OpenClawConfig;
   channel: string;
   accountId?: string | null;
+  /** Force a concrete agent after higher-level channel code has resolved an explicit target. */
+  agentIdOverride?: string | null;
   peer?: RoutePeer | null;
   /** Parent peer for threads — used for binding inheritance when peer doesn't match directly. */
   parentPeer?: RoutePeer | null;
@@ -53,6 +55,7 @@ export type ResolvedAgentRoute = {
     | "binding.team"
     | "binding.account"
     | "binding.channel"
+    | "agent-mention"
     | "default";
 };
 
@@ -628,6 +631,11 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
       );
     }
   }
+
+  if (input.agentIdOverride) {
+    return choose(input.agentIdOverride, "agent-mention");
+  }
+
   // Thread parent inheritance: if peer (thread) didn't match, check parent peer binding
   const baseScope = {
     guildId,

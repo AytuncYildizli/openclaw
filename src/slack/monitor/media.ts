@@ -166,6 +166,42 @@ function resolveForwardedAttachmentImageUrl(attachment: SlackAttachment): string
   }
 }
 
+type SlackMediaCandidate = {
+  url: string;
+};
+
+function isSlackImageFile(file: SlackFile): boolean {
+  const mime = file.mimetype?.toLowerCase();
+  if (mime?.startsWith("image/")) {
+    return true;
+  }
+  const name = file.name?.toLowerCase() ?? "";
+  return /\.(?:avif|gif|jpe?g|png|webp)$/i.test(name);
+}
+
+function collectSlackThumbnailCandidates(file: SlackFile): SlackMediaCandidate[] {
+  const urls = [
+    file.thumb_1024,
+    file.thumb_960,
+    file.thumb_720,
+    file.thumb_480,
+    file.thumb_360,
+    file.thumb_160,
+    file.thumb_80,
+  ].filter((url): url is string => Boolean(url?.trim()));
+  return urls.map((url) => ({ url }));
+}
+
+function resolveSlackMediaCandidates(file: SlackFile, maxBytes: number): SlackMediaCandidate[] {
+  const originalUrl = file.url_private_download ?? file.url_private;
+  const original = originalUrl ? [{ url: originalUrl }] : [];
+  const thumbnails = isSlackImageFile(file) ? collectSlackThumbnailCandidates(file) : [];
+  if (thumbnails.length > 0 && typeof file.size === "number" && file.size > maxBytes) {
+    return [...thumbnails, ...original];
+  }
+  return [...original, ...thumbnails];
+}
+
 async function mapLimit<T, R>(
   items: T[],
   limit: number,
@@ -209,56 +245,59 @@ export async function resolveSlackMedia(params: {
     limitedFiles,
     MAX_SLACK_MEDIA_CONCURRENCY,
     async (file) => {
-      const url = file.url_private_download ?? file.url_private;
-      if (!url) {
+      const candidates = resolveSlackMediaCandidates(file, params.maxBytes);
+      if (candidates.length === 0) {
         return null;
       }
-      try {
-        // Note: fetchRemoteMedia calls fetchImpl(url) with the URL string today and
-        // handles size limits internally. Provide a fetcher that uses auth once, then lets
-        // the redirect chain continue without credentials.
-        const fetchImpl = createSlackMediaFetch(params.token);
-        const fetched = await fetchRemoteMedia({
-          url,
-          fetchImpl,
-          filePathHint: file.name,
-          maxBytes: params.maxBytes,
-          ssrfPolicy: SLACK_MEDIA_SSRF_POLICY,
-        });
-        if (fetched.buffer.byteLength > params.maxBytes) {
-          return null;
-        }
-
-        // Guard against auth/login HTML pages returned instead of binary media.
-        // Allow user-provided HTML files through.
-        const fileMime = file.mimetype?.toLowerCase();
-        const fileName = file.name?.toLowerCase() ?? "";
-        const isExpectedHtml =
-          fileMime === "text/html" || fileName.endsWith(".html") || fileName.endsWith(".htm");
-        if (!isExpectedHtml) {
-          const detectedMime = fetched.contentType?.split(";")[0]?.trim().toLowerCase();
-          if (detectedMime === "text/html" || looksLikeHtmlBuffer(fetched.buffer)) {
-            return null;
+      for (const candidate of candidates) {
+        try {
+          // Note: fetchRemoteMedia calls fetchImpl(url) with the URL string today and
+          // handles size limits internally. Provide a fetcher that uses auth once, then lets
+          // the redirect chain continue without credentials.
+          const fetchImpl = createSlackMediaFetch(params.token);
+          const fetched = await fetchRemoteMedia({
+            url: candidate.url,
+            fetchImpl,
+            filePathHint: file.name,
+            maxBytes: params.maxBytes,
+            ssrfPolicy: SLACK_MEDIA_SSRF_POLICY,
+          });
+          if (fetched.buffer.byteLength > params.maxBytes) {
+            continue;
           }
-        }
 
-        const effectiveMime = resolveSlackMediaMimetype(file, fetched.contentType);
-        const saved = await saveMediaBuffer(
-          fetched.buffer,
-          effectiveMime,
-          "inbound",
-          params.maxBytes,
-        );
-        const label = fetched.fileName ?? file.name;
-        const contentType = effectiveMime ?? saved.contentType;
-        return {
-          path: saved.path,
-          ...(contentType ? { contentType } : {}),
-          placeholder: label ? `[Slack file: ${label}]` : "[Slack file]",
-        };
-      } catch {
-        return null;
+          // Guard against auth/login HTML pages returned instead of binary media.
+          // Allow user-provided HTML files through.
+          const fileMime = file.mimetype?.toLowerCase();
+          const fileName = file.name?.toLowerCase() ?? "";
+          const isExpectedHtml =
+            fileMime === "text/html" || fileName.endsWith(".html") || fileName.endsWith(".htm");
+          if (!isExpectedHtml) {
+            const detectedMime = fetched.contentType?.split(";")[0]?.trim().toLowerCase();
+            if (detectedMime === "text/html" || looksLikeHtmlBuffer(fetched.buffer)) {
+              continue;
+            }
+          }
+
+          const effectiveMime = resolveSlackMediaMimetype(file, fetched.contentType);
+          const saved = await saveMediaBuffer(
+            fetched.buffer,
+            effectiveMime,
+            "inbound",
+            params.maxBytes,
+          );
+          const label = fetched.fileName ?? file.name;
+          const contentType = effectiveMime ?? saved.contentType;
+          return {
+            path: saved.path,
+            ...(contentType ? { contentType } : {}),
+            placeholder: label ? `[Slack file: ${label}]` : "[Slack file]",
+          };
+        } catch {
+          // Try the next candidate, e.g. a Slack thumbnail when the original is too large.
+        }
       }
+      return null;
     },
   );
 

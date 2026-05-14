@@ -108,6 +108,67 @@ type SlackRoutingContext = {
   historyKey: string;
 };
 
+function normalizeAgentMentionToken(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function collectAgentMentionAliases(cfg: SlackMonitorContext["cfg"]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const agents = cfg.agents?.list;
+  if (!Array.isArray(agents)) {
+    return aliases;
+  }
+  for (const agent of agents) {
+    const id = agent.id?.trim();
+    if (!id) {
+      continue;
+    }
+    for (const candidate of [id, agent.name, agent.identity?.name]) {
+      const normalized = candidate ? normalizeAgentMentionToken(candidate) : "";
+      if (normalized) {
+        aliases.set(normalized, id);
+      }
+    }
+  }
+  return aliases;
+}
+
+function resolveMentionedAgentId(params: {
+  ctx: SlackMonitorContext;
+  text?: string;
+  source: "message" | "app_mention";
+  isDirectMessage: boolean;
+}): string | null {
+  if (params.isDirectMessage) {
+    return null;
+  }
+  const text = params.text ?? "";
+  if (
+    params.source === "app_mention" &&
+    params.ctx.botUserId &&
+    text.includes(`<@${params.ctx.botUserId}>`)
+  ) {
+    return "main";
+  }
+  const aliases = collectAgentMentionAliases(params.ctx.cfg);
+  if (aliases.size === 0) {
+    return null;
+  }
+  const matches = text.match(/@[\p{L}\p{N}_-]+/gu) ?? [];
+  for (const match of matches) {
+    const agentId = aliases.get(normalizeAgentMentionToken(match.slice(1)));
+    if (agentId) {
+      return agentId;
+    }
+  }
+  return null;
+}
+
 async function resolveSlackConversationContext(params: {
   ctx: SlackMonitorContext;
   account: ResolvedSlackAccount;
@@ -256,16 +317,24 @@ function resolveSlackRoutingContext(params: {
   ctx: SlackMonitorContext;
   account: ResolvedSlackAccount;
   message: SlackMessageEvent;
+  source: "message" | "app_mention";
   isDirectMessage: boolean;
   isGroupDm: boolean;
   isRoom: boolean;
   isRoomish: boolean;
 }): SlackRoutingContext {
-  const { ctx, account, message, isDirectMessage, isGroupDm, isRoom, isRoomish } = params;
+  const { ctx, account, message, source, isDirectMessage, isGroupDm, isRoom, isRoomish } = params;
+  const mentionedAgentId = resolveMentionedAgentId({
+    ctx,
+    text: message.text,
+    source,
+    isDirectMessage,
+  });
   const route = resolveAgentRoute({
     cfg: ctx.cfg,
     channel: "slack",
     accountId: account.accountId,
+    agentIdOverride: mentionedAgentId,
     teamId: ctx.teamId || undefined,
     peer: {
       kind: isDirectMessage ? "direct" : isRoom ? "channel" : "group",
@@ -347,6 +416,7 @@ export async function prepareSlackMessage(params: {
     ctx,
     account,
     message,
+    source: opts.source,
     isDirectMessage,
     isGroupDm,
     isRoom,

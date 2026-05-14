@@ -246,6 +246,43 @@ describe("resolveSlackMedia", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("uses Slack image thumbnails when the original file exceeds the media cap", async () => {
+    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue(
+      createSavedMedia("/tmp/thumb.png", "image/png"),
+    );
+    mockFetch.mockResolvedValueOnce(
+      new Response(Buffer.from("small thumbnail"), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }),
+    );
+
+    const result = await resolveSlackMedia({
+      files: [
+        {
+          url_private: "https://files.slack.com/original.png",
+          thumb_1024: "https://files.slack.com/thumb_1024.png",
+          name: "image.png",
+          mimetype: "image/png",
+          size: 25 * 1024 * 1024,
+        },
+      ],
+      token: "xoxb-test-token",
+      maxBytes: 20 * 1024 * 1024,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result?.[0]?.path).toBe("/tmp/thumb.png");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://files.slack.com/thumb_1024.png",
+      expect.anything(),
+    );
+    expect(mockFetch).not.toHaveBeenCalledWith(
+      "https://files.slack.com/original.png",
+      expect.anything(),
+    );
+  });
+
   it("rejects HTML auth pages for non-HTML files", async () => {
     const saveMediaBufferMock = vi.spyOn(mediaStore, "saveMediaBuffer");
     mockFetch.mockResolvedValueOnce(

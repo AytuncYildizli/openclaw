@@ -689,7 +689,12 @@ describe("prepareSlackMessage sender prefix", () => {
     } as unknown as SlackMonitorContext;
   }
 
-  async function prepareSenderPrefixMessage(ctx: SlackMonitorContext, text: string, ts: string) {
+  async function prepareSenderPrefixMessage(
+    ctx: SlackMonitorContext,
+    text: string,
+    ts: string,
+    opts: { source?: "message" | "app_mention"; wasMentioned?: boolean } = {},
+  ) {
     return prepareSlackMessage({
       ctx,
       account: { accountId: "default", config: {}, replyToMode: "off" } as never,
@@ -702,7 +707,7 @@ describe("prepareSlackMessage sender prefix", () => {
         ts,
         event_ts: ts,
       } as never,
-      opts: { source: "message", wasMentioned: true },
+      opts: { source: opts.source ?? "message", wasMentioned: opts.wasMentioned ?? true },
     });
   }
 
@@ -736,5 +741,54 @@ describe("prepareSlackMessage sender prefix", () => {
 
     expect(result).not.toBeNull();
     expect(result?.ctxPayload.CommandAuthorized).toBe(true);
+  });
+
+  it("routes a channel app mention to main even when the channel is bound to another agent", async () => {
+    const ctx = createSenderPrefixCtx({
+      channels: {},
+      slashCommand: { command: "/openclaw", enabled: true },
+    });
+    ctx.cfg.agents = {
+      defaults: { model: "anthropic/claude-opus-4-5", workspace: "/tmp/openclaw" },
+      list: [
+        { id: "main", name: "Mahmut" },
+        { id: "izzy", name: "İzzy" },
+      ],
+    };
+    ctx.cfg.bindings = [
+      { agentId: "izzy", match: { channel: "slack", peer: { kind: "channel", id: "C1" } } },
+    ];
+
+    const result = await prepareSenderPrefixMessage(ctx, "<@BOT> bunu Mahmut görsün", "3.000", {
+      source: "app_mention",
+      wasMentioned: true,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.route.agentId).toBe("main");
+    expect(result?.route.matchedBy).toBe("agent-mention");
+  });
+
+  it("routes plain subagent aliases like @İzzy before channel bindings", async () => {
+    const ctx = createSenderPrefixCtx({
+      channels: {},
+      slashCommand: { command: "/openclaw", enabled: true },
+    });
+    ctx.cfg.agents = {
+      defaults: { model: "anthropic/claude-opus-4-5", workspace: "/tmp/openclaw" },
+      list: [
+        { id: "main", name: "Mahmut" },
+        { id: "izzy", name: "İzzy" },
+      ],
+    };
+    ctx.cfg.bindings = [
+      { agentId: "main", match: { channel: "slack", peer: { kind: "channel", id: "C1" } } },
+    ];
+
+    const result = await prepareSenderPrefixMessage(ctx, "@İzzy tweet draft lazım", "4.000");
+
+    expect(result).not.toBeNull();
+    expect(result?.route.agentId).toBe("izzy");
+    expect(result?.route.matchedBy).toBe("agent-mention");
   });
 });

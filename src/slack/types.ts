@@ -6,6 +6,13 @@ export type SlackFile = {
   size?: number;
   url_private?: string;
   url_private_download?: string;
+  thumb_1024?: string;
+  thumb_960?: string;
+  thumb_720?: string;
+  thumb_480?: string;
+  thumb_360?: string;
+  thumb_160?: string;
+  thumb_80?: string;
 };
 
 export type SlackAttachment = {
